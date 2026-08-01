@@ -19,9 +19,8 @@ init.py -- <command> [args...]     # manifest path from $SECRETS_MANIFEST,
 Drop `init.py` into an image and make it the `ENTRYPOINT`:
 
 ```dockerfile
-ADD https://raw.githubusercontent.com/mf808/container-init/v1.0.0/init.py /app/init.py
+ADD https://raw.githubusercontent.com/mf808/container-init/v1.1.0/init.py /app/init.py
 RUN pip install pyyaml   # if not already a dependency
-COPY secrets.yaml /app/secrets.yaml
 ENTRYPOINT ["python", "/app/init.py", "/app/secrets.yaml", "--"]
 CMD ["streamlit", "run", "app.py"]
 ```
@@ -29,6 +28,24 @@ CMD ["streamlit", "run", "app.py"]
 Pin the URL to a tag, not a branch — this file is meant to be identical
 across every app that uses it, and a tag is how you control when that
 changes.
+
+**Don't `COPY secrets.yaml` into the image.** The manifest is deploy-time
+config — which secrets exist, where they map — not build content. Baking it
+in means changing one mapping requires a full rebuild+republish+redeploy.
+Bind-mount it at runtime instead, alongside however you already deploy the
+app's compose file:
+
+```yaml
+services:
+  app:
+    image: your-app:latest
+    volumes:
+      - ./secrets.yaml:/app/secrets.yaml:ro
+```
+
+The manifest still belongs in the app's repo for version control — it's just
+deployed as a file next to the production compose file, not `COPY`'d into
+the image.
 
 ## Manifest
 
