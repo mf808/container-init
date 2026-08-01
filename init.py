@@ -21,8 +21,12 @@ Manifest (YAML):
 
 The service principal's client secret is never in the manifest — it must be
 set in the environment as AZURE_CLIENT_SECRET (the one bootstrap credential
-each host/app is given out-of-band). If the manifest has zero secrets, no
-Azure calls are made at all and AZURE_CLIENT_SECRET isn't required.
+each host/app is given out-of-band). Whether Azure gets contacted at all is
+gated on AZURE_CLIENT_SECRET being present, not on whether the manifest lists
+secrets — the same image + manifest can run unmodified in local dev (no
+AZURE_CLIENT_SECRET set: skip straight to exec, a one-line stderr notice, no
+error) and in production (set: fetch for real). This is deliberate: a
+manifest is "secrets this app might need," not "secrets this run must fetch."
 
 Requires PyYAML for the manifest; everything else is stdlib (urllib) — no
 Azure SDK, so this drops into any Python image unmodified.
@@ -83,11 +87,16 @@ def main(argv=None):
 
     entries = manifest.get("secrets") or []
     env = dict(os.environ)
+    client_secret = os.environ.get("AZURE_CLIENT_SECRET")
+
+    if entries and not client_secret:
+        print(
+            "init.py: AZURE_CLIENT_SECRET not set, skipping Key Vault fetch (local dev?)",
+            file=sys.stderr,
+        )
+        entries = []
 
     if entries:
-        client_secret = os.environ.get("AZURE_CLIENT_SECRET")
-        if not client_secret:
-            sys.exit("AZURE_CLIENT_SECRET is not set (required: manifest lists secrets)")
         try:
             token = get_token(manifest["tenant_id"], manifest["client_id"], client_secret)
         except urllib.error.HTTPError as e:
