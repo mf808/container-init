@@ -39,8 +39,9 @@ init.py <manifest.yaml> --out <path>
 
 Unlike exec mode, sidecar mode never exits on its own — it's a small
 always-on daemon in the style of tools like External Secrets Operator, not a
-one-shot init step. On a fixed interval (`REFRESH_INTERVAL` env var, e.g.
-`30s`/`5m`/`1h`, default `5m`) it re-fetches every secret and writes every
+one-shot init step. On a fixed interval — **set from outside the container**,
+never hardcoded, via the `REFRESH_INTERVAL` env var (e.g. `30s`/`5m`/`60m`,
+default `60m`) — it re-fetches every secret and writes every
 `env:` target as a `KEY=value` line to a dotenv-style file at `<path>`
 (`file:` targets still write to their own path, same as exec mode) —
 **but only if that fetch actually succeeds**. A failed refresh (network
@@ -55,9 +56,9 @@ server.
 ```yaml
 services:
   secrets-fetcher:
-    image: ghcr.io/mf808/container-init:v2.0.0
+    image: ghcr.io/mf808/container-init:v2.0.1
     environment:
-      REFRESH_INTERVAL: 5m
+      REFRESH_INTERVAL: 5m   # optional — overrides the 60m default, set per-deploy
     volumes:
       - secrets:/out
       - ./secrets.yaml:/secrets.yaml:ro
