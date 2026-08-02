@@ -44,7 +44,7 @@ then exits 0.
 ```yaml
 services:
   secrets-fetcher:
-    image: ghcr.io/mf808/container-init:v1.2.0
+    image: ghcr.io/mf808/container-init:v1.2.1
     volumes:
       - secrets:/out
       - ./secrets.yaml:/secrets.yaml:ro
