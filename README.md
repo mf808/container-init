@@ -23,7 +23,7 @@ init.py -- <command> [args...]     # manifest path from $SECRETS_MANIFEST,
 Drop `init.py` into an image and make it the `ENTRYPOINT`:
 
 ```dockerfile
-ADD https://raw.githubusercontent.com/mf808/container-init/v1.2.0/init.py /app/init.py
+ADD https://raw.githubusercontent.com/mf808/container-init/v1.2.1/init.py /app/init.py
 RUN pip install pyyaml   # if not already a dependency
 ENTRYPOINT ["python", "/app/init.py", "/app/secrets.yaml", "--"]
 CMD ["streamlit", "run", "app.py"]
