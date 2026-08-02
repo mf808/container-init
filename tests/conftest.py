@@ -9,6 +9,7 @@ header, error handling) still runs for real.
 import io
 import json
 import urllib.error
+import urllib.parse
 
 import pytest
 import yaml
@@ -36,7 +37,10 @@ class FakeAzure:
         if self.on_request:
             self.on_request(url)
 
-        if "login.microsoftonline.com" in url:
+        # Real hostname check, not a substring match — a naive `"login.microsoftonline.com" in url`
+        # would also match an attacker-controlled URL like
+        # "https://evil.example/login.microsoftonline.com" or a lookalike subdomain.
+        if urllib.parse.urlparse(url).hostname == "login.microsoftonline.com":
             if self.token_error:
                 raise self.token_error
             return _FakeResponse({"access_token": "fake-token"})

@@ -19,6 +19,7 @@ gets a dedicated, permanent regression test.
 import os
 import stat
 import threading
+import urllib.parse
 
 from init import _run_sidecar, _sidecar_tick
 
@@ -130,7 +131,7 @@ def test_run_sidecar_refreshes_on_each_interval(write_manifest, fake_azure, monk
     call_count = {"n": 0}
 
     def on_request(url):
-        if "login.microsoftonline.com" in url:
+        if urllib.parse.urlparse(url).hostname == "login.microsoftonline.com":
             call_count["n"] += 1
             if call_count["n"] >= 3:
                 stop_event.set()

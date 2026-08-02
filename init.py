@@ -185,24 +185,35 @@ def _fetch_all(manifest_path):
 
 def _write_file_target(path, value, perm):
     """Writes via a temp file + atomic rename so a reader never sees a
-    partially-written file, then applies perm to the final path."""
+    partially-written file. Creates the temp file with `perm` directly
+    (via os.open, not open()+chmod after) so the secret is never briefly
+    on disk at a wider permission than intended between creation and chmod."""
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
     tmp_path = f"{path}.tmp"
-    with open(tmp_path, "w") as f:
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, perm)
+    with os.fdopen(fd, "w") as f:
+        # Writing a fetched secret to disk in clear text is this function's
+        # entire purpose (an app reads it back at its own startup) — the
+        # `perm` above and the atomic rename are the actual controls, not
+        # the absence of a write. lgtm[py/clear-text-storage-sensitive-data]
         f.write(value)
-    os.chmod(tmp_path, perm)
     os.replace(tmp_path, path)
 
 
 def _write_dotenv(out_path, env_entries):
+    """Same atomic-with-correct-permissions-from-creation approach as
+    _write_file_target, see its docstring."""
     directory = os.path.dirname(out_path) or "."
     os.makedirs(directory, exist_ok=True)
     tmp_path = f"{out_path}.tmp"
-    with open(tmp_path, "w") as f:
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    with os.fdopen(fd, "w") as f:
         for key, value in env_entries:
+            # Same as _write_file_target above — the dotenv file is meant
+            # to be read by the app process, clear text by design.
+            # lgtm[py/clear-text-storage-sensitive-data]
             f.write(f"{key}={_dotenv_quote(value)}\n")
-    os.chmod(tmp_path, 0o644)
     os.replace(tmp_path, out_path)
 
 
