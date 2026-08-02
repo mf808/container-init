@@ -147,19 +147,25 @@ def _fetch_all(manifest_path):
     return env_entries, file_entries
 
 
-def _write_file_target(path, value):
+def _write_file_target(path, value, perm):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
         f.write(value)
-    os.chmod(path, 0o600)
+    os.chmod(path, perm)
 
 
 def main(argv=None):
     mode, manifest_path, target = _parse_args(argv if argv is not None else sys.argv)
     env_entries, file_entries = _fetch_all(manifest_path)
 
+    # Sidecar mode's whole point is a DIFFERENT container/user reading these
+    # files (e.g. a Python image running as root writing for a Node image's
+    # non-root user) — 0600 would make them unreadable cross-container, so
+    # use 0644 there. Exec mode's file: targets are typically same-process
+    # consumption, so 0600 (tighter) stays the default.
+    file_mode = 0o644 if mode == "sidecar" else 0o600
     for path, value in file_entries:
-        _write_file_target(path, value)
+        _write_file_target(path, value, file_mode)
 
     if mode == "sidecar":
         out_path = target
@@ -167,7 +173,7 @@ def main(argv=None):
         with open(out_path, "w") as f:
             for key, value in env_entries:
                 f.write(f"{key}={_dotenv_quote(value)}\n")
-        os.chmod(out_path, 0o600)
+        os.chmod(out_path, 0o644)
         return
 
     command = target
