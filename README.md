@@ -8,7 +8,11 @@ The point: an entrypoint's job is to *start* the app, not to encode policy
 about which secrets it needs. That belongs in a manifest — data, not script
 logic — so this file never changes no matter how many secrets an app has.
 
-## Usage
+## Two modes
+
+**Exec mode** — wrap the app's own container. Zero-touch for the app (secrets
+arrive as real env vars), but couples the fetcher's runtime (Python) into
+the app's own image:
 
 ```
 init.py <manifest.yaml> -- <command> [args...]
@@ -19,15 +23,56 @@ init.py -- <command> [args...]     # manifest path from $SECRETS_MANIFEST,
 Drop `init.py` into an image and make it the `ENTRYPOINT`:
 
 ```dockerfile
-ADD https://raw.githubusercontent.com/mf808/container-init/v1.1.0/init.py /app/init.py
+ADD https://raw.githubusercontent.com/mf808/container-init/v1.2.0/init.py /app/init.py
 RUN pip install pyyaml   # if not already a dependency
 ENTRYPOINT ["python", "/app/init.py", "/app/secrets.yaml", "--"]
 CMD ["streamlit", "run", "app.py"]
 ```
 
-Pin the URL to a tag, not a branch — this file is meant to be identical
-across every app that uses it, and a tag is how you control when that
-changes.
+**Sidecar mode** — a dedicated one-shot container (this repo's own image),
+zero changes to the app's image/Dockerfile at all. Better fit when the app
+isn't Python (no runtime to add):
+
+```
+init.py <manifest.yaml> --out <path>
+```
+
+Writes every `env:` target as a `KEY=value` line to a dotenv-style file at
+`<path>` (`file:` targets still write to their own path, same as exec mode),
+then exits 0.
+
+```yaml
+services:
+  secrets-fetcher:
+    image: ghcr.io/mf808/container-init:v1.2.0
+    volumes:
+      - secrets:/out
+      - ./secrets.yaml:/secrets.yaml:ro
+    env_file: .env   # AZURE_TENANT_ID/CLIENT_ID/CLIENT_SECRET
+    command: ["/secrets.yaml", "--out", "/out/secrets.env"]
+
+  app:
+    image: your-app:latest
+    depends_on:
+      secrets-fetcher:
+        condition: service_completed_successfully
+    volumes:
+      - secrets:/secrets:ro
+    # app's own startup loads /secrets/secrets.env itself, e.g. Node:
+    #   require('dotenv').config({ path: '/secrets/secrets.env' })
+
+volumes:
+  secrets:
+```
+
+Runs once per `docker compose up`, not on every app restart — the shared
+volume persists independently. A secret rotated in the vault later needs an
+explicit re-run (`docker compose up --force-recreate secrets-fetcher`), not
+something that happens automatically.
+
+Pin image/URL references to a tag, not a branch — this tool is meant to be
+identical across every app that uses it, and a tag is how you control when
+that changes.
 
 **Don't `COPY secrets.yaml` into the image.** The manifest is deploy-time
 config — which secrets exist, where they map — not build content. Baking it
