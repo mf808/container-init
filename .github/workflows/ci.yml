@@ -1,0 +1,35 @@
+name: CI
+
+# Gate for every pull request: the image is never built unless this is green,
+# and branch protection blocks merge until it passes.
+on:
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: the test job only checks out code. (CodeQL:
+# actions/missing-workflow-permissions)
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run test suite
+        run: python -m pytest -q
+
+      - name: Dependency vulnerability audit (informational)
+        continue-on-error: true
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt

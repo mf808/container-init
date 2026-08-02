@@ -1,0 +1,27 @@
+name: Dependabot auto-merge
+
+# Every Dependabot PR — any ecosystem, any bump level (patch / minor / major) — is
+# set to auto-merge with no human or Claude interaction. The CI gate (the full test
+# suite) is the sole decider: GitHub merges the PR the moment CI passes, and never
+# before.
+#
+# Uses AUTOMERGE_TOKEN (a real personal token), not the default GITHUB_TOKEN: GitHub
+# never fires other on:push workflows for a push/merge authored by GITHUB_TOKEN (bot-loop
+# protection), which would silently stop release.yml from running for every Dependabot
+# merge. A real token's merges are ordinary pushes and trigger release.yml normally.
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge (CI decides the actual merge)
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN }}

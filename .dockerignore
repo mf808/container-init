@@ -1,0 +1,14 @@
+# Keep the build context (and image) lean — nothing here is needed at runtime.
+.git
+.github
+.gitignore
+.venv
+.claude
+tests
+__pycache__
+**/__pycache__
+*.pyc
+pytest.ini
+requirements-dev.txt
+CLAUDE.md
+README.md

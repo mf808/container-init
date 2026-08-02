@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Python dependencies — bumps flow through the same gated CI pipeline as any change.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # Wait 7 days after a release before proposing it: malicious or broken
+    # releases are typically yanked within days, and with fully hands-off
+    # auto-merge this cooldown is the only human-free window to dodge them.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "fix"          # dependency bumps land as patch releases
+      include: scope
+
+  # Keep the workflow actions themselves current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
