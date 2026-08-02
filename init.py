@@ -14,7 +14,7 @@
     Runs forever alongside the app rather than exiting after one fetch —
     a small always-on daemon in the style of tools like External Secrets
     Operator, not a one-shot init step. On a fixed interval (REFRESH_INTERVAL
-    env var, e.g. "30s"/"5m"/"1h", default "5m") it re-fetches every secret
+    env var, e.g. "30s"/"5m"/"60m"/"1h", default "60m") it re-fetches every secret
     and, only if that fetch actually succeeds (a live connection to Azure was
     established), atomically rewrites every `env:` target as a KEY=value
     line in a dotenv-style file at <path> (`file:` targets still write to
@@ -248,7 +248,7 @@ def main(argv=None):
     mode, manifest_path, target = _parse_args(argv if argv is not None else sys.argv)
 
     if mode == "sidecar":
-        interval = _parse_duration(os.environ.get("REFRESH_INTERVAL", "5m"))
+        interval = _parse_duration(os.environ.get("REFRESH_INTERVAL", "60m"))
         stop_event = threading.Event()
         signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
         signal.signal(signal.SIGINT, lambda *_: stop_event.set())

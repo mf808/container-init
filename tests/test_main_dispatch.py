@@ -33,17 +33,17 @@ def test_main_sidecar_uses_default_refresh_interval(
     [(m, o, interval)] = mock_run_sidecar
     assert m == str(manifest)
     assert o == str(out_path)
-    assert interval == 300  # 5m default
+    assert interval == 3600  # 60m default
 
 
 def test_main_sidecar_reads_refresh_interval_env(
     write_manifest, monkeypatch, mock_run_sidecar, tmp_path
 ):
-    monkeypatch.setenv("REFRESH_INTERVAL", "1h")
+    monkeypatch.setenv("REFRESH_INTERVAL", "30m")
     manifest = write_manifest(vault="v", tenant_id="t", client_id="c", secrets=[])
     out_path = tmp_path / "secrets.env"
 
     init.main(["init.py", str(manifest), "--out", str(out_path)])
 
     [(_, _, interval)] = mock_run_sidecar
-    assert interval == 3600
+    assert interval == 1800  # explicitly overridden, distinct from the 60m default
