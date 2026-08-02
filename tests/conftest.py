@@ -23,15 +23,18 @@ class FakeAzure:
     init.py actually request. ``secrets`` maps secret name -> value.
     """
 
-    def __init__(self, secrets, *, token_error=None, secret_errors=None):
+    def __init__(self, secrets, *, token_error=None, secret_errors=None, on_request=None):
         self.secrets = secrets
         self.token_error = token_error
         self.secret_errors = secret_errors or {}
         self.requested_urls = []
+        self.on_request = on_request
 
     def __call__(self, req, *args, **kwargs):
         url = req.full_url if hasattr(req, "full_url") else req
         self.requested_urls.append(url)
+        if self.on_request:
+            self.on_request(url)
 
         if "login.microsoftonline.com" in url:
             if self.token_error:
@@ -74,8 +77,10 @@ def http_error():
 def fake_azure(monkeypatch):
     """Patch init.py's urlopen call; returns the FakeAzure so tests can configure it."""
 
-    def _install(secrets=None, *, token_error=None, secret_errors=None):
-        fake = FakeAzure(secrets or {}, token_error=token_error, secret_errors=secret_errors)
+    def _install(secrets=None, *, token_error=None, secret_errors=None, on_request=None):
+        fake = FakeAzure(
+            secrets or {}, token_error=token_error, secret_errors=secret_errors, on_request=on_request
+        )
         monkeypatch.setattr(init.urllib.request, "urlopen", fake)
         return fake
 

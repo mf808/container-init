@@ -29,22 +29,35 @@ ENTRYPOINT ["python", "/app/init.py", "/app/secrets.yaml", "--"]
 CMD ["streamlit", "run", "app.py"]
 ```
 
-**Sidecar mode** — a dedicated one-shot container (this repo's own image),
-zero changes to the app's image/Dockerfile at all. Better fit when the app
-isn't Python (no runtime to add):
+**Sidecar mode** — a long-lived container (this repo's own image) that runs
+continuously alongside the app, zero changes to the app's image/Dockerfile at
+all. Better fit when the app isn't Python (no runtime to add):
 
 ```
 init.py <manifest.yaml> --out <path>
 ```
 
-Writes every `env:` target as a `KEY=value` line to a dotenv-style file at
-`<path>` (`file:` targets still write to their own path, same as exec mode),
-then exits 0.
+Unlike exec mode, sidecar mode never exits on its own — it's a small
+always-on daemon in the style of tools like External Secrets Operator, not a
+one-shot init step. On a fixed interval (`REFRESH_INTERVAL` env var, e.g.
+`30s`/`5m`/`1h`, default `5m`) it re-fetches every secret and writes every
+`env:` target as a `KEY=value` line to a dotenv-style file at `<path>`
+(`file:` targets still write to their own path, same as exec mode) —
+**but only if that fetch actually succeeds**. A failed refresh (network
+blip, Azure outage, expired credential) is logged and otherwise ignored: the
+previous, last-known-good secrets are left completely untouched on disk, and
+the container keeps running and retries on the next interval. It never
+crashes and never blanks out a secret just because one refresh attempt
+failed. Deliberately minimal footprint for something meant to run
+indefinitely: no dependency beyond PyYAML, one sleep loop, no background HTTP
+server.
 
 ```yaml
 services:
   secrets-fetcher:
-    image: ghcr.io/mf808/container-init:v1.2.1
+    image: ghcr.io/mf808/container-init:v2.0.0
+    environment:
+      REFRESH_INTERVAL: 5m
     volumes:
       - secrets:/out
       - ./secrets.yaml:/secrets.yaml:ro
@@ -55,7 +68,7 @@ services:
     image: your-app:latest
     depends_on:
       secrets-fetcher:
-        condition: service_completed_successfully
+        condition: service_healthy
     volumes:
       - secrets:/secrets:ro
     # app's own startup loads /secrets/secrets.env itself, e.g. Node:
@@ -65,10 +78,18 @@ volumes:
   secrets:
 ```
 
-Runs once per `docker compose up`, not on every app restart — the shared
-volume persists independently. A secret rotated in the vault later needs an
-explicit re-run (`docker compose up --force-recreate secrets-fetcher`), not
-something that happens automatically.
+**`condition: service_healthy`, not `service_completed_successfully`** —
+this container intentionally never exits, so "completed successfully" would
+never become true and the app would never start. Health comes from this
+repo's own Dockerfile `HEALTHCHECK`, which checks for a readiness file
+(`READY_FILE` env var, default `/tmp/container-init-ready`) created only
+after the first successful fetch — the same "app waits for secrets to exist"
+guarantee the old one-shot version gave, just expressed as a healthcheck
+instead of a container exit code.
+
+A secret rotated in the vault is picked up automatically on the next
+`REFRESH_INTERVAL` tick — no manual `docker compose up --force-recreate`
+needed anymore.
 
 Pin image/URL references to a tag, not a branch — this tool is meant to be
 identical across every app that uses it, and a tag is how you control when
@@ -102,7 +123,10 @@ secrets:
   - name: <key-vault-secret-name>
     env: SOME_ENV_VAR       # set as an env var for the child process
   - name: <key-vault-secret-name>
-    file: /path/to/file     # write the raw value to this file, mode 0600
+    file: /path/to/file     # write the raw value to this file — mode 0600 in
+                             # exec mode (same-process consumption), 0644 in
+                             # sidecar mode (a different, non-root container
+                             # is meant to read it)
 ```
 
 A secret's *value* can be anything — a token, a whole YAML config blob, a

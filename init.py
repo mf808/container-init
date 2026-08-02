@@ -5,17 +5,39 @@
     init.py <manifest.yaml> -- <command> [args...]
     init.py -- <command> [args...]     # manifest path from SECRETS_MANIFEST,
                                         # default ./secrets.yaml
-    Injects secrets into the environment/filesystem, then execs <command>.
+    Fetches once, injects secrets into the environment/filesystem, then execs
+    <command>. One-shot by design: the wrapped process is what stays alive.
     Use as a container's ENTRYPOINT.
 
-  Sidecar mode (a dedicated one-shot container, app image untouched):
+  Sidecar mode (a long-lived container, app image untouched):
     init.py <manifest.yaml> --out <path>
-    Writes every `env:` target as a KEY=value line to a dotenv-style file at
-    <path> (`file:` targets still write to their own path as usual), then
-    exits 0. Pair with `depends_on: condition: service_completed_successfully`
-    and a shared volume; the app reads <path> itself at its own startup
-    (e.g. Node's dotenv pointed at that path) — no ENTRYPOINT/image change
-    needed on the app side at all.
+    Runs forever alongside the app rather than exiting after one fetch —
+    a small always-on daemon in the style of tools like External Secrets
+    Operator, not a one-shot init step. On a fixed interval (REFRESH_INTERVAL
+    env var, e.g. "30s"/"5m"/"1h", default "5m") it re-fetches every secret
+    and, only if that fetch actually succeeds (a live connection to Azure was
+    established), atomically rewrites every `env:` target as a KEY=value
+    line in a dotenv-style file at <path> (`file:` targets still write to
+    their own path as usual). A failed refresh (network blip, Azure outage,
+    expired credential) is logged and otherwise ignored — the previous,
+    last-known-good secrets are left completely untouched on disk, and the
+    process keeps running and retries on the next interval. It never crashes
+    the container and never blanks out a secret just because one refresh
+    attempt failed.
+
+    After the first successful fetch, a readiness file (READY_FILE env var,
+    default /tmp/container-init-ready) is created/touched — this repo's own
+    Dockerfile HEALTHCHECK checks for it, so callers should use
+    `depends_on: condition: service_healthy` (NOT service_completed_successfully
+    — this container intentionally never exits on its own). Pair with a
+    shared volume; the app reads <path> itself at its own startup (e.g.
+    Node's dotenv pointed at that path) — no ENTRYPOINT/image change needed
+    on the app side at all.
+
+    Deliberately minimal footprint for something meant to run indefinitely
+    next to an app: no dependency beyond PyYAML, one thread-free sleep loop,
+    no background HTTP server — the whole idle cost between refreshes is a
+    blocked `Event.wait()`.
 
 The same script runs identically whether the manifest lists 0 or 100
 secrets — what to fetch is data (the manifest), not logic in this file.
@@ -29,8 +51,10 @@ Manifest (YAML):
         env: <ENV_VAR_NAME>            # exec mode: set as an env var
                                         # sidecar mode: one line in the dotenv file
       - name: <key-vault-secret-name>
-        file: <path>                   # write the raw value to this file (0600),
-                                        # same in both modes
+        file: <path>                   # write the raw value to this file (0600
+                                        # in exec mode, 0644 in sidecar mode —
+                                        # a different, non-root container is
+                                        # meant to read it there)
 
 The service principal's client secret is never in the manifest — it must be
 set in the environment as AZURE_CLIENT_SECRET (the one bootstrap credential
@@ -47,7 +71,9 @@ Azure SDK, so this drops into any Python image unmodified.
 """
 import json
 import os
+import signal
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -55,6 +81,7 @@ import urllib.request
 import yaml
 
 API_VERSION = "7.4"
+DEFAULT_READY_FILE = "/tmp/container-init-ready"
 
 
 def _post_form(url, fields):
@@ -85,6 +112,15 @@ def get_secret(vault, name, token):
 def _dotenv_quote(value):
     escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
     return f'"{escaped}"'
+
+
+def _parse_duration(text):
+    """Parse '30s' / '5m' / '1h' into seconds. Bare digits are seconds."""
+    text = text.strip().lower()
+    units = {"s": 1, "m": 60, "h": 3600}
+    if text and text[-1] in units:
+        return int(text[:-1]) * units[text[-1]]
+    return int(text)
 
 
 def _parse_args(argv):
@@ -148,33 +184,71 @@ def _fetch_all(manifest_path):
 
 
 def _write_file_target(path, value, perm):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w") as f:
+    """Writes via a temp file + atomic rename so a reader never sees a
+    partially-written file, then applies perm to the final path."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w") as f:
         f.write(value)
-    os.chmod(path, perm)
+    os.chmod(tmp_path, perm)
+    os.replace(tmp_path, path)
+
+
+def _write_dotenv(out_path, env_entries):
+    directory = os.path.dirname(out_path) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp_path = f"{out_path}.tmp"
+    with open(tmp_path, "w") as f:
+        for key, value in env_entries:
+            f.write(f"{key}={_dotenv_quote(value)}\n")
+    os.chmod(tmp_path, 0o644)
+    os.replace(tmp_path, out_path)
+
+
+def _sidecar_tick(manifest_path, out_path, ready_path):
+    """One refresh attempt. Returns True if secrets on disk were updated
+    (a live Azure connection was established this cycle), False if the
+    attempt failed — in which case last-known-good secrets are left
+    completely untouched."""
+    try:
+        env_entries, file_entries = _fetch_all(manifest_path)
+    except SystemExit as e:
+        print(f"init.py: refresh failed, keeping last-known-good secrets: {e}", file=sys.stderr)
+        return False
+
+    for path, value in file_entries:
+        _write_file_target(path, value, 0o644)
+    _write_dotenv(out_path, env_entries)
+    with open(ready_path, "w"):
+        pass
+    return True
+
+
+def _run_sidecar(manifest_path, out_path, interval, stop_event, ready_path=None):
+    ready_path = ready_path or os.environ.get("READY_FILE", DEFAULT_READY_FILE)
+    while True:
+        _sidecar_tick(manifest_path, out_path, ready_path)
+        if stop_event.wait(interval):
+            return
 
 
 def main(argv=None):
     mode, manifest_path, target = _parse_args(argv if argv is not None else sys.argv)
-    env_entries, file_entries = _fetch_all(manifest_path)
-
-    # Sidecar mode's whole point is a DIFFERENT container/user reading these
-    # files (e.g. a Python image running as root writing for a Node image's
-    # non-root user) — 0600 would make them unreadable cross-container, so
-    # use 0644 there. Exec mode's file: targets are typically same-process
-    # consumption, so 0600 (tighter) stays the default.
-    file_mode = 0o644 if mode == "sidecar" else 0o600
-    for path, value in file_entries:
-        _write_file_target(path, value, file_mode)
 
     if mode == "sidecar":
-        out_path = target
-        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-        with open(out_path, "w") as f:
-            for key, value in env_entries:
-                f.write(f"{key}={_dotenv_quote(value)}\n")
-        os.chmod(out_path, 0o644)
+        interval = _parse_duration(os.environ.get("REFRESH_INTERVAL", "5m"))
+        stop_event = threading.Event()
+        signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
+        signal.signal(signal.SIGINT, lambda *_: stop_event.set())
+        _run_sidecar(manifest_path, target, interval, stop_event)
         return
+
+    # Exec mode: one-shot, unchanged — the wrapped command is the long-lived
+    # process here, not this script.
+    env_entries, file_entries = _fetch_all(manifest_path)
+    for path, value in file_entries:
+        _write_file_target(path, value, 0o600)
 
     command = target
     env = dict(os.environ)
